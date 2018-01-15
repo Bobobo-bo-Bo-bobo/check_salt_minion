@@ -1,0 +1,128 @@
+#!/bin/bash
+
+SHORT_OPTIONS="hH:t:c:w:"
+LONG_OPTIONS="help,hostname:,timeout:,critical:,warning:"
+
+# Nagios exit codes
+OK=0
+WARNING=1
+CRITICAL=2
+UNKNOWN=3
+
+# command timeout in seconds
+TIMEOUT=20
+WARNTIME=10
+CRITICALTIME=15
+MINIONNAME=""
+
+function usage () {
+    echo "Usage: ${0} -H <hostname> [-w <warntime>] [-c <criticaltime>] [-t <timeout>] [-h]
+
+    -H <hostname>		Name of the minion to check for.
+    --hostname=<hostname>	This argument is required.
+
+    -c <criticaltime>		Response time in seconds after the state will be reported as CRITICAL.
+    --critical=<criticaltime>	Default: ${CRITICALTIME}
+
+    -h		This text
+    --help
+
+    -t <timeout>		Timeout for salt command in seconds.
+    --timeout=<timeout>		Default: ${TIMEOUT}
+
+    -w <warntime>		Response time in seconds after the state will be reported as CRITICAL.
+    --warning=<warntime>	Default: ${WARNTIME}
+"
+
+}
+
+# check if bc is present
+if ! which bc 2>&1 > /dev/null; then
+    echo "UNKNOWN - bc command not found"
+    exit ${UNKNOWN}
+fi
+
+# check if date is present
+if ! which date 2>&1 > /dev/null; then
+    echo "UNKNOWN - date command not found"
+    exit ${UNKNOWN}
+fi
+
+# check if salt command is present
+if ! which salt 2>&1 > /dev/null; then
+    echo "UNKNOWN - salt command not found"
+    exit ${UNKNOWN}
+fi
+
+options=$(getopt --options ${SHORT_OPTIONS} --long ${LONG_OPTIONS} -- "${@}")
+eval set -- "${options}"
+
+while true; do
+    case "${1}" in
+	-h|--help)
+	    usage
+	    exit 0
+	    ;;
+	-H|--hostname)
+	    MINIONNAME="${2}"
+	    shift
+	    shift
+	    ;;
+	-w|--warning)
+	    WARNTIME="${2}"
+	    shift
+	    shift
+	    ;;
+	-c|--critical)
+	    CRITICALTIME="${2}"
+	    shift
+	    shift
+	    ;;
+	-t|--timeout)
+	    TIMEOUT="${2}"
+	    shift
+	    shift
+	    ;;
+	*)
+	    break
+	    ;;
+    esac
+done
+
+# sanity check
+if [ -z "${MINIONNAME}" ]; then
+    echo "Missing hostname."
+    usage
+    exit ${UNKNOWN}
+fi
+
+if [ ${WARNTIME} -ge ${CRITICALTIME} ]; then
+    echo "UNKNOWN - Warning time must be less than critical time"
+    exit ${UNKNOWN}
+fi
+
+start=$(date +'%s')
+minion_version=$(salt --no-color --timeout=${TIMEOUT} --output=newline_values_only ${MINIONNAME} test.version 2>&1)
+stop=$(date +'%s')
+
+if [ ${?} -ne 0 ]; then
+    echo "CRITICAL - Salt minion does not reply ${minion_version}"
+    exit ${CRITICAL}
+fi
+
+delta=$(echo "${stop} - ${start}" | bc)
+
+if [ ${delta} -ge ${CRITICALTIME} ]; then
+    echo "CRITICAL - Minion responds after ${delta} seconds."
+    exit ${CRITICAL}
+elif [ ${delta} -ge ${WARNTIME} ]; then
+    echo "WARNING - Minion responds after ${delta} seconds."
+    exit ${WARNING}
+else
+    echo "OK - Minion version ${minion_version} responds after ${delta} seconds."
+    exit ${OK}
+fi
+
+# Never reached ;)
+exit ${UNKNOWN}
+
